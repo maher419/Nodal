@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- M1: الحد الأدنى اللازم لبناء وحدة android (كانت تعلن في settings.gradle.kts
+     لكن بدون هذا الملف كان ./gradlew build يفشل: AndroidManifest.xml غير موجود).
+     INTERNET: شبكة P2P لا تعمل بدونه (سيُستخدم عند إضافة كود التطبيق في M2). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="Nodal"
+        android:supportsRtl="true" />
+</manifest>
