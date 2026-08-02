@@ -1,132 +1,187 @@
-Nodal — A Decentralized Social Network (P2P)
-Complete architecture reference — Last updated: August 2026 Every decision here is based on hands-on verification of the jvm-libp2p 1.3.5-RELEASE library (latest release, Cloudsmith) Arabic version: IDEA.md [blocked]
+# Nodal — A Decentralized Social Network (P2P)
 
-1. Vision
-A fully decentralized social network and content-sharing platform: no central server owns the data or controls the connections. Every device (phone/computer) is a node acting as both client and server. Inspired by Twitter in simplicity and interaction speed.
+> **Complete Architecture Reference**
+> *Last updated: August 2026*
+> *Implementation status:* Verified against `jvm-libp2p:1.3.5-RELEASE` (Cloudsmith).
+> *Arabic Version:* [IDEA.md](https://www.google.com/search?q=./IDEA.md)
 
-Censorship resistance: no central authority deletes or blocks content
-Privacy & security: no central database to breach, and connections are always encrypted
-User ownership: your data lives with you and with whoever you choose to share it with
-Resilience: the service keeps running even if nodes leave the network
-2. Core Principles (Non-Negotiable)
-No official copy of anything — no central database, no "source of truth"
-Identity = key (Ed25519) — data is signed, not certified by an authority
-Every device is a node (client + server) — storage is distributed among those who care about the content
-Everything is a signed post of a specific type — post / profile / list / like / follow / block
-Infrastructure exists but is neutral — bootstrap/relay nodes relay, they don't control or delete
-Local-First — local storage is a cache and archive, not an authority
-3. Architecture
-Modules
-Module	Technology	Role
-core	Kotlin/JVM (KMP-ready later)	identity, CID, signing, node, protocols, feed
-bootstrap	Kotlin/JVM	infrastructure node: rendezvous + relay + ring memory + optional index
-android	Kotlin + Jetpack Compose (Arabic RTL)	UI: timeline / compose / profile / people / settings
-The Three Layers (functional distribution — no layer owns everything)
-Layer	Role	Data ownership
-User device	Keystore + local cache + live memory	its key + an archive of what it has seen
-Peers	GossipSub + block exchange + distributed queries	copies of what matters to them
-bootstrap	rendezvous + relay + shallow ring memory + optional address index	owns nothing permanent — shallow temporary memory
-4. Identity & Cryptography
-Key: Ed25519 — generated inside the Android Keystore on Android (never extracted) + password-encrypted backup
-Identifier (PeerId): multihash(identity) of the protobuf-encoded public key — self-computed from the key, with no authority
-Signing: Ed25519 over canonical JSON (CanonicalJson: alphabetically sorted keys, UTF-8, integers without stray fractions)
-Verification: extract the public key from the PeerId (manual protobuf parsing) then verify — no service call
-E2EE (M5): X25519 + ChaCha20-Poly1305 over the existing Noise layer — for private messaging only; public posts are signed, not encrypted
-5. Content Addressing (CID) — From Scratch
-Type	Structure	Use
-CIDv0	base58btc(0x12 0x20 sha256(data))	post identifiers (hash of canonical JSON)
-CIDv1 raw	base32(0x01 0x55 0x12 0x20 sha256(data))	media and block identifiers
-Implementation from scratch: Base58btc + Base32 (RFC4648) + Multihash (~100 lines) — no external libraries
-Self-describing CID: any post = hash of its content → natural deduplication and automatic integrity verification
-6. Networking (libp2p)
-Stack
-Transport: TCP
-Encryption: Noise (XX) — mandatory for every connection
-Multiplexing: mplex
-PubSub: GossipSub v1.x
-Auxiliary protocols: Identify + Ping
-mDNS: automatic discovery on the same Wi-Fi network
-Relay: circuit relay via bootstrap (for NAT peers) — beta in jvm-libp2p, being tested in practice
-Topics
-Topic	Use
-/nodal/u/<peerId>	user topic — following = subscribing
-/nodal/feed/1.0.0	global feed — discovery
-Known Constraints (documented from library inspection)
-No Kademlia DHT in jvm-libp2p → discovery: bootstrap + mDNS + manual add + from content
-No WebRTC → NAT peers via relay only (M1–M4), WebRTC in M6
-7. Timeline — Push + Pull + Local Index
-push: GossipSub subscription to followed topics → arrives instantly
-pull: on open → /nodal/sync/1.0.0 "everything after my cursor" from bootstrap + peers
-merge: dedupe by CID → descending chronological order → cap of 500
-catch-up: ring memory at bootstrap (last 500 posts per active topic)
-Every incoming post is verified (signature + ±5-minute time window + 64KB size cap) before acceptance
-seq is used for internal ordering and counters only — there is no strict ascending check yet: the sync path (catch-up pull) fetches full history, and a strict check would reject old-seq posts arriving late. (Strict seq verification requires a (seq, createdAt) cursor per author — deferred to M2 with the local cache.)
-Followers = a set of PeerIds in memory/cache, built from observed follow posts and manual additions
-8. Peer Discovery & Adding People (5 Ways)
-Built-in bootstrap: an address list shipped in the app, connected on first run
-mDNS: automatic on the same local network
-Manual: paste/scan multiaddr + PeerId
-From content: any received post carries its author's identity → a "Follow" button adds them instantly
-Signed lists (list): a post carrying a group of identifiers → follow everyone in one tap (the primary discovery mechanism)
-9. Finding People — Three Graduated Layers
-Local: in the node's cache (follows, people who messaged you, what arrived via pubsub) — instant, no network
-Distributed: /nodal/search/1.0.0 — query to connected peers with a TTL hop limit; each node searches locally and replies; results are merged (Gnutella technique)
-Optional index: bootstrap offers an addresses-only index (name/id/avatar CID — no content) — optional and replaceable, like choosing a DNS provider
-The honest limit: "network bubble" search, not universal search — an accepted trade-off without a central index.
+---
 
-10. Fame & Trending — No Central Algorithm
-Mechanism	Role
-Signed curated lists	the base: "tech celebrities" = a list post; trust flows through the social graph
-Seed accounts	a set of accounts on first run, their content replicated across many nodes = always available
-Local counters	each node counts the likes/reposts it has seen; "trending" = merging replies from connected peers
-Fame = who many people follow and whose content replicates — not who an algorithm promotes.
+## 1. Vision & Overview
 
-11. Nodal Protocols (Versions)
-Protocol	Purpose	Details	Stage
-/nodal/blocks/1.0.0	block exchange (IPFS-style)	request: CID → reply: block or NOT_FOUND	M1
-/nodal/sync/1.0.0	pull posts since a cursor	request: {topics[], since} → reply: {posts[]}	M1
-/nodal/search/1.0.0	distributed query	request: {query, ttl} → reply: {results[]}	M2
-/nodal/dm/1.0.0	E2EE private messaging	X25519 key + ChaCha20-Poly1305	M5
-Unified framing: every protocol = canonical JSON with length-prefixed framing (4-byte length + UTF-8 payload).
+**Nodal** is a fully decentralized, serverless social network and content-sharing platform inspired by Twitter's simplicity and speed.
 
-12. Post Types
-type	Key fields	Use
-post	text, media[]	core content (text/images/files)
-profile	text (bio), media[0]=avatar	the profile — published on your topic
-list	payload (JSON: entries[])	signed celebrity/topic lists
-follow	ref = followed PeerId	open, syncable relationship graph
-like	ref = post CID	countable like
-block	payload (JSON: entries[])	personal blocklist — the user's right
-13. Roles & Security
-bootstrap does not sign, modify, or delete — it only relays. Users are legally responsible for their content (no intermediary)
-Mandatory receive-time verification: signature → time window → 64KB size cap (pubsub and sync alike)
-Flood protection: 10MB block size cap (enforced) + per-author publish rate limit (M2 — requires persistent storage)
-Moderation: signed blocklists + communities with private topics (subscription = accepting the rules)
-Compression: optional gzip for large blocks in M4
-14. Battery & Data
-Connection active only while the app is open — no permanent background service (M1–M3)
-Large media: pull on Wi-Fi only
-A time cursor (cursor) per channel — never a full sync
-15. Storage
-Stage	Storage	Reason
-M1–M3	memory only + key file (no database!)	proof of concept — a "living river" as in the concept
-M4	local Room cache (offline reading archive)	cache, not authority — no official copy
-16. Roadmap
-Stage	Content	Success criterion
-M1	core: identity + CID + signing + node + blocks + sync + in-memory feed + two-node local test	a signed post travels from one node to another and verifies
-M2	full bootstrap: ring memory + relay + rendezvous + address index	two nodes over the real internet (no localhost)
-M3	Android Compose RTL: timeline / compose / profile / people / settings	APK working on two devices
-M4	local cache + offline reading + Wi-Fi-only media	scrolling history offline
-M5	E2EE + communities + lists UI	a private message unreadable by bootstrap
-M6	WebRTC + KMP port (iOS/web)	the same core on two platforms
-17. Honest Limitations (Accepted Trade-offs — We Don't Hide Them)
-❌ bubble search, not universal (impossible without a central index)
-❌ local-relative trending, not universal
-❌ availability = replication — no guarantees (an unreplicated node disappears)
-❌ no universal archive — history ends at the edges of replication
-⚠️ first-run success depends on bootstrap quality (optional, multiple, open source)
-18. Definition of Final Success
-Works on two devices over the real internet (no localhost)
-Timeline displays signed and verified posts
-Taking down any bootstrap does not kill the network (if an alternative exists)
-No single point of control — no server, no provider, no authority
+* **Censorship-Resistant:** No central authority can delete content or block users.
+* **Privacy & Security:** End-to-end network encryption with zero central database risks.
+* **User Ownership:** Data resides exclusively with the user and their peer graph.
+* **Resilience:** The network remains active even if individual nodes or bootstrap servers go offline.
+
+---
+
+## 2. Core Non-Negotiable Principles
+
+* **No Source of Truth:** No official central server or master database exists.
+* **Identity = Ed25519 Key:** Data is cryptographically signed, requiring no third-party certification.
+* **Every Device is a Node:** Storage and distribution are handled directly by active peers.
+* **Typed Signed Posts:** Profiles, posts, likes, follows, and blocks are all typed, signed events.
+* **Neutral Infrastructure:** Relay and bootstrap nodes purely route traffic without administrative power.
+* **Local-First Architecture:** Local device storage serves as an archive, not a central authority.
+
+---
+
+## 3. System Architecture & Layers
+
+### Architecture Modules
+
+| Module | Technology | Primary Role |
+| --- | --- | --- |
+| **`core`** | Kotlin/JVM *(KMP-ready)* | Identity, CID generation, signing, node lifecycle, protocols, and feed logic. |
+| **`bootstrap`** | Kotlin/JVM | Infrastructure node: Rendezvous, Relay, shallow ring memory, and optional indexing. |
+| **`android`** | Kotlin + Jetpack Compose | User interface with full RTL (Arabic) support: Timeline, Compose, Profile, Settings. |
+
+### The Three Functional Layers
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Data Ownership Layer                            │
+│                 User Device: Keystore + Local Cache                    │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+┌──────────────────────────────────▼─────────────────────────────────────┐
+│                            Peer Layer                                  │
+│                 GossipSub + Block Exchange Query                       │
+└──────────────────────────────────┬─────────────────────────────────────┘
+                                   │
+┌──────────────────────────────────▼─────────────────────────────────────┐
+│                          Bootstrap Layer                               │
+│            Rendezvous + Circuit Relay + Ring Memory                    │
+└────────────────────────────────────────────────────────────────────────┘
+
+```
+
+---
+
+## 4. Cryptography, Identity & Content Addressing
+
+### Cryptographic Stack
+
+* **Identity Keys:** Ed25519 generated in Android Keystore (non-exportable) + encrypted backup.
+* **Peer ID:** Self-computed `multihash(identity)` of the Protobuf-encoded public key.
+* **Signatures:** Ed25519 calculated over **Canonical JSON** (alphabetical keys, UTF-8, strict integer formatting).
+* **Direct Verification:** Public key is extracted directly from the Peer ID — zero lookup required.
+* **E2EE (M5):** X25519 + ChaCha20-Poly1305 over the Noise layer for private messaging.
+
+### Content Addressing (Zero-Dependency CID)
+
+CIDs are implemented natively (~100 lines of code) supporting Base58btc, Base32 (RFC4648), and Multihash.
+
+| Type | Format / Encoding | Usage |
+| --- | --- | --- |
+| **CIDv0** | `base58btc(0x12 0x20 sha256(data))` | Post identifiers (Canonical JSON hashes) |
+| **CIDv1** | `raw base32(0x01 0x55 0x12 0x20 sha256(data))` | Media assets and block payloads |
+
+---
+
+## 5. Networking & Discovery (jvm-libp2p)
+
+### Protocol Stack
+
+* **Transport:** TCP
+* **Encryption:** Noise (XX handshake) — mandatory across all connections
+* **Multiplexing:** mplex
+* **PubSub:** GossipSub v1.x
+* **Auxiliary:** Identify, Ping, mDNS (Local Wi-Fi discovery)
+* **Relay:** Circuit Relay via Bootstrap nodes for NAT traversal
+
+### Topics & Discovery
+
+```
+/nodal/u/{peer_id}   --> User Topic (Following = Subscribing)
+/nodal/feed/1.0.0    --> Global Discovery Feed
+
+```
+
+> **Known Constraints:**
+> 1. No Kademlia DHT in `jvm-libp2p`: Peer discovery relies on Bootstrap, mDNS, manual connections, and inline post identities.
+> 2. WebRTC is disabled for M1–M4 (Circuit Relay is used for NAT peers). WebRTC is targeted for M6.
+> 
+> 
+
+---
+
+## 6. Protocols & Timeline Pipeline
+
+### Custom Network Protocols
+
+All custom protocols use uniform length-prefixed Canonical JSON framing (`4-byte big-endian length + UTF-8 payload`).
+
+* `/nodal/blocks/1.0.0` — Block Exchange (CID Request $\rightarrow$ Payload/NOT_FOUND response).
+* `/nodal/sync/1.0.0` — Delta pull since cursor `{ topics[], since }`.
+* `/nodal/search/1.0.0` — TTL-bounded distributed graph query.
+* `/nodal/dm/1.0.0` — E2EE direct messaging.
+
+### Push + Pull Pipeline
+
+```
+          [ Local Index ] ◄── Merge & Dedupe ◄── [ Incoming Buffer ]
+                                                        ▲
+                                                        │
+┌───────────────────────────────┐       ┌───────────────┴───────────────┐
+│     Pull (Catch-Up/Sync)      │       │          Push (Live)          │
+│   Sync requests to peers/     │       │   GossipSub subscription      │
+│     bootstrap ring memory     │       │      to followed topics       │
+└───────────────────────────────┘       └───────────────────────────────┘
+
+```
+
+1. **Ingest Validation:** Verify Ed25519 signature, check timestamp ($\pm 5\text{ min}$ window), and enforce strict 64 KB size limit.
+2. **Merge & Dedupe:** Deduplicate by CID, sort chronologically, and cap memory timeline at 500 posts.
+
+---
+
+## 7. Data Specifications & Schema
+
+| Type Key | Payload Parameters | Description |
+| --- | --- | --- |
+| `post` | `text`, `media[]` | Standard post content |
+| `profile` | `text` (bio), `media[0]` (avatar) | Profile metadata published on user topic |
+| `list` | `entries[]` | Signed curated user lists (Discovery mechanism) |
+| `follow` | `ref` (Target Peer ID) | Explicit follow event |
+| `like` | `ref` (Post CID) | Public engagement event |
+| `block` | `entries[]` | Personal network-level blocklist |
+
+---
+
+## 8. Development Roadmap
+
+```
+[M1] Core Engine ──► [M2] Bootstrap Network ──► [M3] Android UI ──► [M4] Cache & Offline ──► [M5] E2EE & Lists ──► [M6] WebRTC & KMP
+
+```
+
+* **M1: Core Engine** — Keys, CIDs, signing, jvm-libp2p transport, basic sync, and two-node local verification.
+* **M2: Bootstrap Integration** — Ring memory, relay, rendezvous, and internet WAN testing.
+* **M3: Android Application** — Jetpack Compose UI with full RTL support.
+* **M4: Offline Storage** — Room cache integration, offline history reading, Wi-Fi media policies.
+* **M5: Privacy & Curation** — E2EE direct messages, communities, and custom signed lists.
+* **M6: Platform Expansion** — WebRTC implementation, Kotlin Multiplatform (iOS/Web) port.
+
+---
+
+## 9. Architectural Trade-offs & Limitations
+
+| Feature | Limitation | Design Trade-off / Mitigation |
+| --- | --- | --- |
+| **Search** | Network bubble search | TTL-bounded queries; no central indexing engine. |
+| **Trending** | Localized trends | Aggregated counters from immediate peers instead of global ranking. |
+| **Availability** | Replication dependent | Unreplicated offline content becomes unavailable until the author re-connects. |
+| **Bootstrapping** | Initial discovery dependency | Pre-seeded open-source bootstrap addresses (replaceable anytime). |
+
+---
+
+## 10. Definition of Success
+
+1. Real internet end-to-end verification across two independent devices without local relaying.
+2. Timeline successfully renders cryptographically verified post signatures.
+3. Network topology remains fully functional even if all default bootstrap nodes are taken down (given active peer alternatives).
+4. Absolute absence of central points of failure, control, or administration.
